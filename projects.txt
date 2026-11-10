@@ -1,2 +1,4 @@
 # One owner/repo per line. Public projects only.
 mikeholp87/Restic-Studio
+mikeholp87/Luma-Launcher
+mikeholp87/Tasky

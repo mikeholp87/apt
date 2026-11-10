@@ -21,8 +21,7 @@ page_tpl=$here/../index.html.tpl
 [[ -f $page_tpl ]] || page_tpl=$here/../assets/central/index.html.tpl
 
 cd -- "$dir"
-shopt -s nullglob
-debs=(*.deb)
+mapfile -d '' debs < <(find . -name '*.deb' -print0) # releases live in per-project/per-tag folders
 if ((${#debs[@]} == 0)); then
 	echo "No .deb files in $dir" >&2
 	exit 1
