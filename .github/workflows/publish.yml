@@ -1,0 +1,85 @@
+name: Publish apt repository
+# Rebuilds the signed flat apt repository from the .deb files attached to every
+# GitHub Release of every project listed in projects.txt, and deploys it to
+# GitHub Pages. Runs when projects.txt changes, nightly (to catch releases whose
+# own workflows could not trigger this one), and on demand. Pull requests that
+# touch the machinery do a dry run with a throwaway key and never deploy.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  pull_request:
+    paths:
+      - .github/workflows/publish.yml
+      - scripts/**
+      - index.html.tpl
+      - projects.txt
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev apt-utils gnupg
+      - name: Fetch every released package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir apt
+          grep -Ev '^\s*(#|$)' projects.txt | while read -r project; do
+            for tag in $(gh release list -R "$project" --limit 1000 --json tagName -q '.[].tagName'); do
+              for asset in $(gh release view "$tag" -R "$project" --json assets -q '.assets[].name' | grep '\.deb$' || true); do
+                gh release download "$tag" -R "$project" --pattern "$asset" --dir apt
+              done
+            done
+          done
+          ls -l apt
+      - name: Public URL and key name
+        run: |
+          echo "APT_BASE_URL=https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}" >>"$GITHUB_ENV"
+          echo "APT_KEYNAME=${GITHUB_REPOSITORY_OWNER,,}-apt" >>"$GITHUB_ENV"
+          echo "APT_LABEL=${GITHUB_REPOSITORY_OWNER} apt repository" >>"$GITHUB_ENV"
+      - name: Sign with the real key
+        if: github.event_name != 'pull_request'
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          install -d -m 700 "$GNUPGHOME"
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          bash scripts/build-apt-repo.sh apt apt.asc
+          echo "PUBKEY=$GITHUB_WORKSPACE/apt.asc" >>"$GITHUB_ENV"
+      - name: Dry run with a throwaway key (pull requests)
+        if: github.event_name == 'pull_request'
+        run: |
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          install -d -m 700 "$GNUPGHOME"
+          gpg --batch --passphrase '' --quick-generate-key "Dry Run <dry-run@invalid>" ed25519 sign never
+          gpg --armor --export dry-run@invalid >"$RUNNER_TEMP/dry-run.asc"
+          bash scripts/build-apt-repo.sh apt "$RUNNER_TEMP/dry-run.asc"
+          echo "PUBKEY=$RUNNER_TEMP/dry-run.asc" >>"$GITHUB_ENV"
+      - name: apt accepts the repository and rejects tampering
+        run: bash scripts/test-apt-repo.sh apt "$PUBKEY"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
