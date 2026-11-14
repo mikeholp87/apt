@@ -2,3 +2,4 @@
 mikeholp87/Restic-Studio
 mikeholp87/Luma-Launcher
 mikeholp87/Tasky
+mikeholp87/update-forge
